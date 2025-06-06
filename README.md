@@ -247,3 +247,136 @@ if __name__ == "__main__":
         print(f"Maior IQAr registrado: {relatorio_completo['estatisticas_iqar'].get('max_iqar', 'N/A')}")
         print(f"Classe mais frequente: {relatorio_completo['estatisticas_iqar'].get('classe_mais_frequente', 'N/A')}")
         print(f"Poluente mais crítico: {relatorio_completo['estatisticas_iqar'].get('poluente_mais_critico', 'N/A')}")
+
+
+# 
+
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import os
+
+# [Seção 1: Configurações e Parâmetros] 
+# (Manter as mesmas definições de PADROES, CLASSES_IQAR e PARAMETROS_IQAR do código anterior)
+
+def process_annual_data(file_path, year):
+    """Processa um arquivo anual e retorna tabelas resumidas."""
+    print(f"Processando {year}...")
+    
+    # Carrega e prepara os dados
+    df = pd.read_csv(file_path, sep=',')
+    df['Data_Hora'] = pd.to_datetime(df['Data'] + ' ' + df['Hora'])
+    df['Valor'] = pd.to_numeric(df['Valor'], errors='coerce')
+    df = df.dropna(subset=['Valor', 'Data_Hora'])
+    
+    # Conversão de unidades
+    df.loc[df['Poluente'] == 'CO', 'Valor'] *= 1000  # mg/m³ para µg/m³
+    
+    # Adiciona colunas temporais
+    df['Ano'] = year
+    df['Mes'] = df['Data_Hora'].dt.month
+    df['Dia'] = df['Data_Hora'].dt.day
+    
+    # Cálculo do IQAr horário
+    iqar_horario = calcular_iqar_global(df)
+    iqar_horario['Ano'] = year
+    
+    # Resumos por período
+    resumo_mensal = calcular_resumo_mensal(df)
+    resumo_estacao = calcular_resumo_estacao(df)
+    violacoes = calcular_violacoes(df)
+    
+    return {
+        'iqar_horario': iqar_horario,
+        'resumo_mensal': resumo_mensal,
+        'resumo_estacao': resumo_estacao,
+        'violacoes': violacoes
+    }
+
+def calcular_resumo_mensal(df):
+    """Calcula estatísticas mensais agregadas."""
+    return df.groupby(['Ano', 'Mes', 'Poluente']).agg(
+        Media=('Valor', 'mean'),
+        Maximo=('Valor', 'max'),
+        Minimo=('Valor', 'min'),
+        Contagem=('Valor', 'count')
+    ).reset_index()
+
+def calcular_resumo_estacao(df):
+    """Calcula estatísticas por estação."""
+    return df.groupby(['Ano', 'Estação', 'Poluente']).agg(
+        Media=('Valor', 'mean'),
+        Maximo=('Valor', 'max'),
+        Contagem=('Valor', 'count')
+    ).reset_index()
+
+def calcular_violacoes(df):
+    """Calcula violações dos padrões."""
+    violacoes = []
+    
+    for poluente, padroes in PADROES.items():
+        pol_df = df[df['Poluente'] == poluente]
+        
+        # Violações diárias
+        diario = pol_df.resample('D', on='Data_Hora')['Valor'].mean().reset_index()
+        diario['Poluente'] = poluente
+        diario['Ano'] = diario['Data_Hora'].dt.year
+        
+        if 'CONAMA_24h' in padroes:
+            diario['Violacao_CONAMA'] = diario['Valor'] > padroes['CONAMA_24h']
+        if 'OMS_24h' in padroes:
+            diario['Violacao_OMS'] = diario['Valor'] > padroes['OMS_24h']
+        
+        violacoes.append(diario)
+    
+    return pd.concat(violacoes) if violacoes else pd.DataFrame()
+
+def consolidar_anos(base_folder, anos):
+    """Consolida dados de múltiplos anos."""
+    tabelas_consolidadas = {
+        'iqar_horario': [],
+        'resumo_mensal': [],
+        'resumo_estacao': [],
+        'violacoes': []
+    }
+    
+    for ano in anos:
+        file_path = f"{base_folder}/{ano}ES1.csv"
+        if os.path.exists(file_path):
+            dados_ano = process_annual_data(file_path, ano)
+            for tabela in tabelas_consolidadas:
+                tabelas_consolidadas[tabela].append(dados_ano[tabela])
+    
+    # Consolida todas as tabelas
+    return {
+        'IQAr_Horario': pd.concat(tabelas_consolidadas['iqar_horario']),
+        'Resumo_Mensal': pd.concat(tabelas_consolidadas['resumo_mensal']),
+        'Resumo_Estacao': pd.concat(tabelas_consolidadas['resumo_estacao']),
+        'Violacoes': pd.concat(tabelas_consolidadas['violacoes'])
+    }
+
+def save_for_powerbi(tabelas, output_folder):
+    """Salva as tabelas para o Power BI."""
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+    
+    for nome, tabela in tabelas.items():
+        caminho = f"{output_folder}/{nome}.csv"
+        tabela.to_csv(caminho, index=False, sep=';', encoding='utf-8-sig')
+        print(f"Tabela {nome} salva em {caminho}")
+
+if __name__ == "__main__":
+    # Configurações
+    PASTA_DADOS = "dados_qualidade_ar"
+    PASTA_SAIDA = "powerbi_resumo"
+    ANOS = range(2015, 2023)  # De 2015 a 2022
+    
+    # Processamento
+    tabelas_consolidadas = consolidar_anos(PASTA_DADOS, ANOS)
+    save_for_powerbi(tabelas_consolidadas, PASTA_SAIDA)
+    
+    print("\nProcesso concluído! Tabelas resumidas prontas para o Power BI:")
+    print("- IQAr_Horario.csv: Dados horários de qualidade do ar")
+    print("- Resumo_Mensal.csv: Estatísticas mensais por poluente")
+    print("- Resumo_Estacao.csv: Estatísticas por estação de monitoramento")
+    print("- Violacoes.csv: Registro de violações dos padrões")
